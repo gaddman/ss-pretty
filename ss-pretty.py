@@ -121,7 +121,7 @@ while True:
         if verbose:
             print(line)
         local, peer = re.search(
-            "([0-9a-f\.:]+:\w+)\s+([0-9a-f\.:]+:\w+)", line
+            "([0-9a-f\.:\[\]]+:\w+)\s+([0-9a-f\.:\[\]]+:\w+)", line
         ).groups()
         fields["local"] = local
         fields["peer"] = peer

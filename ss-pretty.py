@@ -5,13 +5,14 @@
 # 2019-03-20
 
 import argparse
+import re
 import signal
 import subprocess
 import sys
 import time
 from datetime import datetime
 
-# Register signal handler to exit gracefully if no time specified
+# Register signal handler to exit gracefully if Ctrl-C pressed (when no time specified)
 def signal_handler(sig, frame):
     sys.exit(0)
 
@@ -20,6 +21,9 @@ signal.signal(signal.SIGINT, signal_handler)
 
 # Field size mapping (for nice looking output)
 widths = {
+    "timestamp": 15,
+    "local": 21,  # 21 good for IPv4
+    "peer": 21,  # 21 good for IPv4
     "skmem": 60,
     "cong_alg": 8,
     "ts": 2,
@@ -64,16 +68,16 @@ parser = argparse.ArgumentParser(
     formatter_class=argparse.RawDescriptionHelpFormatter,
     description="Just like running 'ss -tmi', but with a columnar format",
     epilog="""Default fields to display are:
-    mss,rcvmss,advmss,rto,rtt,cwnd,ssthresh,bytes_acked,unacked,retrans,send,
-    pacing_rate,delivery_rate,busy,rcv_space,notsent
+    timestamp,local,peer,mss,rcvmss,advmss,rto,rtt,cwnd,ssthresh,bytes_acked,
+    unacked,retrans,send,pacing_rate,delivery_rate,busy,rcv_space,notsent
 
 Example, showing just data rates:
-    prettySS.py -f 'src 203.0.113.254:80' -u 0.5 -d 'pacing_rate,delivery_rate'""",
+    prettySS.py -f 'src 203.0.113.254:80' -u 0.5 -d 'timestamp,pacing_rate'""",
 )
 parser.add_argument(
     "-d",
     help="Comma-separated list of fields to display (see ss output or man)",
-    default="mss,rcvmss,advmss,rto,rtt,cwnd,ssthresh,bytes_acked,unacked,retrans,send,pacing_rate,delivery_rate,busy,rcv_space,notsent",
+    default="timestamp,local,peer,mss,rcvmss,advmss,rto,rtt,cwnd,ssthresh,bytes_acked,unacked,retrans,send,pacing_rate,delivery_rate,busy,rcv_space,notsent",
 )
 parser.add_argument("-f", help="Filter (as used by ss)", type=str, default="")
 parser.add_argument(
@@ -88,58 +92,70 @@ filter = args.f
 frequency = args.u
 duration = args.t
 
-# Print header and verfy fields
-print("timestamp      ", end=" ")
+# Print header and verify fields
 for thisfield in showfields.split(","):
     try:
         print("{:{width}}".format(thisfield, width=widths.get(thisfield)), end=" ")
     except ValueError:
-        print("\n'{}' is not a valid field".format(thisfield))
+        print("\n'{}' is not a valid field, use one of:".format(thisfield))
+        print(", ".join(widths))
         sys.exit()
 print()
 
 sscommand = ["ss", "-tmi", filter]
+
 if duration is not None:
     endTime = time.time() + duration
 
 while True:
-    output = subprocess.check_output(sscommand)
-    timestamp = datetime.now().time()
-    lines = output.splitlines()
-    if len(lines) == 1:
-        # only the header line
-        continue
-    else:
-        # Just take the first line with data
-        # (best make sure your filter only matches one line)
-        line = lines[2].decode()
-    if verbose:
-        print(line)
     fields = {}
-    chunks = line.split()  # split on space
-    for index, chunk in enumerate(chunks):
-        if ":" in chunk:
-            # Most fields are key:value
-            key, value = chunk.split(":")
-            fields[key] = value
-        elif "rate" in chunk or chunk == "send":
-            # send, delivery_rate, and pacing_rate
-            # have the key in one field and the value in the next
-            key = chunk
-            value = chunks[index + 1]
-            fields[key] = value
-        elif index == 1:
-            # TCP algorithm is always the 2nd field
-            key = "cong_alg"
-            value = chunk
-            fields[key] = value
-    print("{}".format(timestamp), end=" ")
-    for thisfield in showfields.split(","):
-        print(
-            "{:{width}}".format(fields.get(thisfield, ""), width=widths.get(thisfield)),
-            end=" ",
-        )
-    print()
+    # Timestamp isn't super accurate, but still grab it before executing ss
+    timestamp = datetime.now().time()
+    fields["timestamp"] = str(timestamp)
+    output = subprocess.check_output(sscommand).splitlines()
+    # Work through the output of ss, skipping the header
+    output = iter(output[1:])
+    for line in output:
+        # IP addresses/ports
+        line = line.decode()
+        if verbose:
+            print(line)
+        local, peer = re.search(
+            "([0-9a-f\.:]+:\w+)\s+([0-9a-f\.:]+:\w+)", line
+        ).groups()
+        fields["local"] = local
+        fields["peer"] = peer
+        # Kernel data
+        line = next(output).decode()
+        if verbose:
+            print(line + "\n")
+        # Parse the kernel data line
+        chunks = line.split()  # split on space
+        for index, chunk in enumerate(chunks):
+            if ":" in chunk:
+                # Most fields are key:value
+                key, value = chunk.split(":")
+                fields[key] = value
+            elif "rate" in chunk or chunk == "send":
+                # send, delivery_rate, and pacing_rate
+                # have the key in one field and the value in the next
+                key = chunk
+                value = chunks[index + 1]
+                fields[key] = value
+            elif index == 1:
+                # TCP algorithm is always the 2nd field
+                key = "cong_alg"
+                value = chunk
+                fields[key] = value
+        # Output all selected fields
+        for thisfield in showfields.split(","):
+            print(
+                "{:{width}}".format(
+                    fields.get(thisfield, ""), width=widths.get(thisfield)
+                ),
+                end=" ",
+            )
+        print()
     if duration is not None and time.time() >= endTime:
         break
     else:

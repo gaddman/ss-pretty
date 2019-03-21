@@ -75,7 +75,7 @@ parser.add_argument(
     help="Comma-separated list of fields to display (see ss output or man)",
     default="mss,rcvmss,advmss,rto,rtt,cwnd,ssthresh,bytes_acked,unacked,retrans,send,pacing_rate,delivery_rate,busy,rcv_space,notsent",
 )
-parser.add_argument("-f", help="Filter (as used by ss)", type=str)
+parser.add_argument("-f", help="Filter (as used by ss)", type=str, default="")
 parser.add_argument(
     "-u", help="Update frequency (seconds, default=1)", type=float, default=1
 )

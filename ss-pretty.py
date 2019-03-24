@@ -6,22 +6,33 @@
 
 import argparse
 import re
+import select
 import signal
 import subprocess
 import sys
+import tty
+import termios
 import time
 from datetime import datetime
 
-# Register signal handler to exit gracefully if Ctrl-C pressed (when no time specified)
-def signal_handler(sig, frame):
-    sys.exit(0)
+# Function to poll for keypresses with timeout and without displaying character
+def getKeypress(timeout):
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        # setraw affects STDOUT, so any print statements will need "\r" to add a LF
+        # https://stackoverflow.com/a/26029573/3592326
+        tty.setraw(fd)
+        ready, _, _ = select.select([sys.stdin], [], [], timeout)
+        if ready:
+            return sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
-
-signal.signal(signal.SIGINT, signal_handler)
 
 # Field size mapping (for nice looking output)
 widths = {
-    "timestamp": 15,
+    "timestamp": 12,
     "local": 21,  # 21 good for IPv4
     "peer": 21,  # 21 good for IPv4
     "skmem": 60,
@@ -72,7 +83,11 @@ parser = argparse.ArgumentParser(
     unacked,retrans,send,pacing_rate,delivery_rate,busy,rcv_space,notsent
 
 Example, showing just data rates:
-    prettySS.py -f 'src 203.0.113.254:80' -u 0.5 -d 'timestamp,pacing_rate'""",
+    prettySS.py -f 'src 203.0.113.254:80' -u 0.5 -d 'timestamp,pacing_rate'
+While running, press:
+    h to repeat the header line
+    v to toggle verbose
+    q to quit""",
 )
 parser.add_argument(
     "-d",
@@ -92,15 +107,22 @@ filter = args.f
 frequency = args.u
 duration = args.t
 
-# Print header and verify fields
-for thisfield in showfields.split(","):
-    try:
-        print("{:{width}}".format(thisfield, width=widths.get(thisfield)), end=" ")
-    except ValueError:
-        print("\n'{}' is not a valid field, use one of:".format(thisfield))
+# Verify fields
+for key in showfields.split(","):
+    if key not in widths:
+        print("'{}' is not a valid field, use one of:".format(key))
         print(", ".join(widths))
         sys.exit()
-print()
+
+
+# Print header
+def printHeader():
+    for thisfield in showfields.split(","):
+        print("{:{width}}".format(thisfield, width=widths.get(thisfield)), end=" ")
+    print("\r")
+
+
+printHeader()
 
 sscommand = ["ss", "-tmi", filter]
 
@@ -109,26 +131,27 @@ if duration is not None:
 
 while True:
     fields = {}
-    # Timestamp isn't super accurate, but still grab it before executing ss
+    # Timestamp isn't accurate to the packet arrival time so chop the last 3 chars off
+    # to truncate to millisecond accuracy
     timestamp = datetime.now().time()
-    fields["timestamp"] = str(timestamp)
+    fields["timestamp"] = str(timestamp)[:-3]
+    # Execute ss command and loop through the output, skipping the header
     output = subprocess.check_output(sscommand).splitlines()
-    # Work through the output of ss, skipping the header
     output = iter(output[1:])
     for line in output:
         # IP addresses/ports
         line = line.decode()
         if verbose:
-            print(line)
+            print("\n" + line)
         local, peer = re.search(
-            "([0-9a-f\.:\[\]]+:\w+)\s+([0-9a-f\.:\[\]]+:\w+)", line
+            r"([0-9a-f\.:\[\]]+:\w+)\s+([0-9a-f\.:\[\]]+:\w+)", line
         ).groups()
         fields["local"] = local
         fields["peer"] = peer
         # Kernel data
         line = next(output).decode()
         if verbose:
-            print(line + "\n")
+            print(line)
         # Parse the kernel data line
         chunks = line.split()  # split on space
         for index, chunk in enumerate(chunks):
@@ -155,8 +178,20 @@ while True:
                 ),
                 end=" ",
             )
-        print()
+        print("\r")
+
     if duration is not None and time.time() >= endTime:
         break
-    else:
-        time.sleep(frequency)
+
+    # check for keypresses while waiting for next output
+    char = getKeypress(frequency)
+    if char is not None:
+        if char == "h":
+            # print header line
+            printHeader()
+        elif char == "v":
+            # toggle verbose mode
+            verbose = not verbose
+        elif char == "q" or char == "\x03":
+            # quit. \x03 = Ctrl-C
+            sys.exit()

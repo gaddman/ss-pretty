@@ -1,9 +1,10 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 # run ss and print the output nicely
 # Chris Gadd
 # https://github.com/gaddman/ss-pretty
 # 2019-03-20
 
+from __future__ import print_function
 import argparse
 import re
 import select
@@ -136,7 +137,12 @@ while True:
     timestamp = datetime.now().time()
     fields["timestamp"] = str(timestamp)[:-3]
     # Execute ss command and loop through the output, skipping the header
-    output = subprocess.check_output(sscommand).splitlines()
+    try:
+        output = subprocess.check_output(sscommand).splitlines()
+    except subprocess.CalledProcessError as e:
+        sys.exit("Failed to run ss")
+    except KeyboardInterrupt:
+        sys.exit()
     output = iter(output[1:])
     for line in output:
         # IP addresses/ports
